@@ -1,0 +1,36 @@
+# Apple Silicon Optimization - MLX Framework (Apple's native ML for M4 Pro NPU/GPU)
+mlx
+mlx-lm
+
+# Core Face Detection - uses built-in models, no external downloads
+face-recognition
+dlib
+Pillow
+
+# PyTorch with Metal Performance Shaders (MPS) for GPU acceleration
+torch
+torchvision
+
+# Database
+sqlalchemy
+
+# Progress tracking and UI
+tqdm
+rich
+
+# API Backend
+fastapi
+uvicorn[standard]
+
+# Data processing and clustering
+numpy
+scikit-learn
+
+# Configuration
+python-dotenv
+
+# Logging
+loguru
+
+# Performance monitoring
+psutil
