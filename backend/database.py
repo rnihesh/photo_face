@@ -109,6 +109,24 @@ class ScanProgress(Base):
         return f"<ScanProgress(dir='{self.directory}', files={self.total_files_scanned}, completed={self.completed})>"
 
 
+class FaceCorrection(Base):
+    """Tracks manual corrections - ground truth for learning."""
+    __tablename__ = 'face_corrections'
+    
+    id = Column(Integer, primary_key=True)
+    face_id = Column(Integer, ForeignKey('faces.id'), nullable=False, index=True, unique=True)
+    # Manual cluster assignment - overrides automatic clustering
+    manual_cluster_id = Column(Integer, ForeignKey('clusters.id'))
+    # If None, face is marked as "noise" / "not this person"
+    person_name = Column(String, index=True)  # The person's name (for grouping)
+    is_excluded = Column(Boolean, default=False)  # True if marked as "not this person"
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def __repr__(self):
+        return f"<FaceCorrection(face_id={self.face_id}, person='{self.person_name}', excluded={self.is_excluded})>"
+
+
 class DatabaseManager:
     """Manages database connections and operations."""
     

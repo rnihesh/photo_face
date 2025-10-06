@@ -33,6 +33,7 @@ function App() {
   }, [darkMode]);
 
   const handleSelectCluster = (clusterId) => {
+    console.log("App.handleSelectCluster called with:", clusterId);
     setSelectedClusterId(clusterId);
     setCurrentView("detail");
   };
@@ -140,7 +141,7 @@ function App() {
         {currentView === "collections" && (
           <ClusterList onSelectCluster={handleSelectCluster} />
         )}
-        {currentView === "detail" && selectedClusterId && (
+        {currentView === "detail" && selectedClusterId !== null && (
           <ClusterDetail
             clusterId={selectedClusterId}
             onBack={handleBackToList}

@@ -22,7 +22,16 @@ export const getClusters = async (params = {}) => {
 };
 
 export const getClusterDetail = async (clusterId) => {
-  const response = await api.get(`/clusters/${clusterId}`);
+  console.log(
+    "api.getClusterDetail called with:",
+    clusterId,
+    "type:",
+    typeof clusterId
+  );
+  const url = `/clusters/${clusterId}`;
+  console.log("Fetching URL:", url);
+  const response = await api.get(url);
+  console.log("Response received:", response.status, response.data);
   return response.data;
 };
 
@@ -51,6 +60,44 @@ export const getFaceInfo = async (faceId) => {
 
 export const getFaceCropUrl = (faceId) => {
   return `${API_BASE_URL}/faces/${faceId}/crop`;
+};
+
+// Face corrections (learning)
+export const excludeFace = async (faceId) => {
+  const response = await api.post(`/faces/${faceId}/exclude`);
+  return response.data;
+};
+
+export const assignFaceToPerson = async (
+  faceId,
+  personName,
+  targetClusterId
+) => {
+  const response = await api.post(`/faces/${faceId}/assign`, null, {
+    params: {
+      person_name: personName,
+      target_cluster_id: targetClusterId,
+    },
+  });
+  return response.data;
+};
+
+export const removeCorrection = async (faceId) => {
+  const response = await api.delete(`/faces/${faceId}/correction`);
+  return response.data;
+};
+
+// Cluster management
+export const setRepresentativeFace = async (clusterId, faceId) => {
+  const response = await api.put(
+    `/clusters/${clusterId}/representative/${faceId}`
+  );
+  return response.data;
+};
+
+export const getClustersByName = async (name) => {
+  const response = await api.get(`/clusters/by-name/${name}`);
+  return response.data;
 };
 
 // Health check

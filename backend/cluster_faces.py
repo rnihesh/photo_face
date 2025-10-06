@@ -26,6 +26,67 @@ load_dotenv()
 console = Console()
 
 
+def apply_manual_corrections(db):
+    """
+    Apply manual corrections after auto-clustering.
+    This allows the system to "learn" from user feedback.
+    
+    Returns:
+        Number of corrections applied
+    """
+    from backend.database import Face, FaceCorrection, Cluster
+    
+    session = db.get_session()
+    try:
+        corrections = session.query(FaceCorrection).all()
+        
+        if not corrections:
+            return 0
+        
+        # Group corrections by person name
+        person_clusters = {}  # name -> cluster_id
+        corrections_applied = 0
+        
+        for correction in corrections:
+            face = session.query(Face).filter_by(id=correction.face_id).first()
+            if not face:
+                continue
+            
+            if correction.is_excluded:
+                # Face marked as "not this person" - remove from cluster
+                if face.cluster_id is not None:
+                    face.cluster_id = None
+                    corrections_applied += 1
+            elif correction.person_name:
+                # Get or create cluster for this person
+                if correction.person_name not in person_clusters:
+                    # Find existing cluster with this name or use manual_cluster_id
+                    cluster = session.query(Cluster).filter_by(name=correction.person_name).first()
+                    if cluster:
+                        person_clusters[correction.person_name] = cluster.id
+                    elif correction.manual_cluster_id is not None:
+                        # Use the manually assigned cluster
+                        cluster = session.query(Cluster).filter_by(id=correction.manual_cluster_id).first()
+                        if cluster:
+                            cluster.name = correction.person_name
+                            person_clusters[correction.person_name] = cluster.id
+                
+                # Assign face to the person's cluster
+                if correction.person_name in person_clusters:
+                    face.cluster_id = person_clusters[correction.person_name]
+                    corrections_applied += 1
+        
+        # Update cluster face counts
+        clusters = session.query(Cluster).all()
+        for cluster in clusters:
+            cluster.face_count = session.query(Face).filter_by(cluster_id=cluster.id).count()
+        
+        session.commit()
+        return corrections_applied
+    finally:
+        session.close()
+
+
 def cluster_faces(min_cluster_size=3, eps=0.5):
     """
     Cluster detected faces using DBSCAN algorithm.
@@ -109,6 +170,12 @@ def cluster_faces(min_cluster_size=3, eps=0.5):
             face_cluster_map[face_id] = int(cluster_label)
     
     db.update_cluster_assignments(face_cluster_map)
+    
+    # Apply manual corrections (learning from user feedback)
+    console.print("\n[bold]🎓 Applying manual corrections (learning from your feedback)...[/bold]")
+    corrections_applied = apply_manual_corrections(db)
+    if corrections_applied > 0:
+        console.print(f"[green]✓ Applied {corrections_applied} manual corrections[/green]")
     
     # Calculate cluster statistics
     console.print("\n[bold]📊 Calculating cluster statistics...[/bold]")

@@ -44,7 +44,10 @@ const ClusterCard = ({ cluster, onClick }) => {
 
   return (
     <div
-      onClick={onClick}
+      onClick={() => {
+        console.log("ClusterCard clicked:", cluster.id, cluster);
+        onClick();
+      }}
       className="bg-white dark:bg-gray-800 rounded-lg shadow-md overflow-hidden border border-gray-200 dark:border-gray-700 hover:shadow-lg dark:hover:shadow-gray-900/50 transition-all cursor-pointer group"
     >
       {/* Thumbnail */}

@@ -336,6 +336,160 @@ async def get_face_crop(face_id: int):
         session.close()
 
 
+# ==================== Manual Correction Endpoints ====================
+
+@app.post("/faces/{face_id}/exclude")
+async def exclude_face(face_id: int):
+    """Mark a face as 'not this person' - will be excluded in future clusterings."""
+    from backend.database import Face, FaceCorrection
+    session = db.get_session()
+    try:
+        face = session.query(Face).filter_by(id=face_id).first()
+        if not face:
+            raise HTTPException(status_code=404, detail="Face not found")
+        
+        # Create or update correction
+        correction = session.query(FaceCorrection).filter_by(face_id=face_id).first()
+        if not correction:
+            correction = FaceCorrection(face_id=face_id)
+            session.add(correction)
+        
+        correction.is_excluded = True
+        correction.person_name = None
+        correction.manual_cluster_id = None
+        
+        # Remove from current cluster
+        old_cluster_id = face.cluster_id
+        face.cluster_id = None
+        
+        session.commit()
+        
+        return {
+            "success": True,
+            "face_id": face_id,
+            "excluded": True,
+            "removed_from_cluster": old_cluster_id
+        }
+    finally:
+        session.close()
+
+
+@app.post("/faces/{face_id}/assign")
+async def assign_face_to_person(face_id: int, person_name: str = Query(...), target_cluster_id: Optional[int] = None):
+    """
+    Manually assign a face to a person. 
+    System will learn and apply this in future clusterings.
+    """
+    from backend.database import Face, Cluster, FaceCorrection
+    session = db.get_session()
+    try:
+        face = session.query(Face).filter_by(id=face_id).first()
+        if not face:
+            raise HTTPException(status_code=404, detail="Face not found")
+        
+        # Find or use target cluster
+        if target_cluster_id:
+            cluster = session.query(Cluster).filter_by(id=target_cluster_id).first()
+        else:
+            # Find cluster by name
+            cluster = session.query(Cluster).filter_by(name=person_name).first()
+        
+        if not cluster:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        
+        # Create or update correction (this is the learning data)
+        correction = session.query(FaceCorrection).filter_by(face_id=face_id).first()
+        if not correction:
+            correction = FaceCorrection(face_id=face_id)
+            session.add(correction)
+        
+        correction.person_name = person_name
+        correction.manual_cluster_id = cluster.id
+        correction.is_excluded = False
+        
+        # Apply immediately
+        old_cluster_id = face.cluster_id
+        face.cluster_id = cluster.id
+        cluster.name = person_name  # Ensure cluster has the name
+        
+        session.commit()
+        
+        return {
+            "success": True,
+            "face_id": face_id,
+            "person_name": person_name,
+            "cluster_id": cluster.id,
+            "moved_from": old_cluster_id
+        }
+    finally:
+        session.close()
+
+
+@app.delete("/faces/{face_id}/correction")
+async def remove_correction(face_id: int):
+    """Remove manual correction - let auto-clustering decide."""
+    from backend.database import FaceCorrection
+    session = db.get_session()
+    try:
+        correction = session.query(FaceCorrection).filter_by(face_id=face_id).first()
+        if correction:
+            session.delete(correction)
+            session.commit()
+            return {"success": True, "face_id": face_id, "correction_removed": True}
+        return {"success": True, "face_id": face_id, "correction_removed": False}
+    finally:
+        session.close()
+
+
+@app.put("/clusters/{cluster_id}/representative/{face_id}")
+async def set_representative_face(cluster_id: int, face_id: int):
+    """Set the representative (key) photo for a cluster."""
+    from backend.database import Face, Cluster
+    session = db.get_session()
+    try:
+        cluster = session.query(Cluster).filter_by(id=cluster_id).first()
+        if not cluster:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        
+        face = session.query(Face).filter_by(id=face_id, cluster_id=cluster_id).first()
+        if not face:
+            raise HTTPException(status_code=404, detail="Face not found in this cluster")
+        
+        cluster.representative_face_id = face_id
+        session.commit()
+        
+        return {
+            "success": True,
+            "cluster_id": cluster_id,
+            "representative_face_id": face_id
+        }
+    finally:
+        session.close()
+
+
+@app.get("/clusters/by-name/{name}")
+async def get_clusters_by_name(name: str):
+    """Get all clusters with the same name (for auto-merge detection)."""
+    from backend.database import Cluster
+    session = db.get_session()
+    try:
+        clusters = session.query(Cluster).filter_by(name=name).all()
+        return {
+            "name": name,
+            "count": len(clusters),
+            "clusters": [
+                {
+                    "id": c.id,
+                    "face_count": c.face_count,
+                    "representative_face_id": c.representative_face_id
+                }
+                for c in clusters
+            ]
+        }
+    finally:
+        session.close()
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
