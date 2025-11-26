@@ -222,7 +222,6 @@ const ClusterDetail = ({ clusterId, onBack }) => {
           </div>
         </div>
       </div>
-
       {/* Photo grid */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
         {cluster.faces?.map((face) => (
@@ -231,35 +230,44 @@ const ClusterDetail = ({ clusterId, onBack }) => {
             className="relative aspect-square bg-gray-100 dark:bg-gray-700 rounded-lg overflow-hidden group"
             onMouseEnter={() => setHoveredFace(face.id)}
             onMouseLeave={() => setHoveredFace(null)}
+            onClick={() => setSelectedPhoto(face)}
           >
             <img
               src={getFaceCropUrl(face.id)}
               alt={`Face ${face.id}`}
               className="w-full h-full object-cover cursor-pointer"
-              onClick={() => setSelectedPhoto(face)}
               loading="lazy"
             />
 
             {/* Action buttons on hover */}
             {hoveredFace === face.id && (
-              <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center gap-2 p-2">
+              <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center gap-2 p-2 pointer-events-none">
                 <button
-                  onClick={() => handleExcludeFace(face.id)}
-                  className="w-full px-2 py-1 bg-red-500 hover:bg-red-600 text-white text-xs rounded"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleExcludeFace(face.id);
+                  }}
+                  className="w-full px-2 py-1 bg-red-500 hover:bg-red-600 text-white text-xs rounded pointer-events-auto"
                   title="Mark as 'not this person'"
                 >
                   ✖ Not this person
                 </button>
                 <button
-                  onClick={() => handleAssignFace(face)}
-                  className="w-full px-2 py-1 bg-blue-500 hover:bg-blue-600 text-white text-xs rounded"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleAssignFace(face);
+                  }}
+                  className="w-full px-2 py-1 bg-blue-500 hover:bg-blue-600 text-white text-xs rounded pointer-events-auto"
                   title="Assign to different person"
                 >
                   ↔ Reassign
                 </button>
                 <button
-                  onClick={() => handleSetRepresentative(face.id)}
-                  className="w-full px-2 py-1 bg-green-500 hover:bg-green-600 text-white text-xs rounded"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleSetRepresentative(face.id);
+                  }}
+                  className="w-full px-2 py-1 bg-green-500 hover:bg-green-600 text-white text-xs rounded pointer-events-auto"
                   title="Set as key photo for this cluster"
                 >
                   ⭐ Set as key
@@ -275,8 +283,7 @@ const ClusterDetail = ({ clusterId, onBack }) => {
             )}
           </div>
         ))}
-      </div>
-
+      </div>{" "}
       {/* Assign modal */}
       {showAssignModal && (
         <div
@@ -320,7 +327,6 @@ const ClusterDetail = ({ clusterId, onBack }) => {
           </div>
         </div>
       )}
-
       {/* Photo modal */}
       {selectedPhoto && (
         <div
