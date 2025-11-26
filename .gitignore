@@ -1,3 +1,4 @@
 
 ./photo_face.db
 photo_face.db
+*.env
