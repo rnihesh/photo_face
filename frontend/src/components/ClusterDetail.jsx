@@ -1,325 +1,411 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
-  getClusterDetail,
-  updateClusterName,
-  excludeFace,
   assignFaceToPerson,
+  excludeFace,
+  getClusterDetail,
+  getFaceCropUrl,
+  getPhotoImageUrl,
+  revealPhotoInFinder,
   setRepresentativeFace,
-  getClusters,
+  updateClusterName,
 } from "../services/api";
-import { getFaceCropUrl, getPhotoImageUrl } from "../services/api";
 
-const ClusterDetail = ({ clusterId, onBack }) => {
+const ClusterDetail = ({ clusterId, onBack, refreshKey }) => {
   const [cluster, setCluster] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [isEditingName, setIsEditingName] = useState(false);
   const [name, setName] = useState("");
+  const [hoveredFace, setHoveredFace] = useState(null);
   const [selectedPhoto, setSelectedPhoto] = useState(null);
+  const [assignTargetFace, setAssignTargetFace] = useState(null);
+  const [assignPersonName, setAssignPersonName] = useState("");
+  const [notice, setNotice] = useState(null);
   const [imageLoading, setImageLoading] = useState(false);
   const [imageError, setImageError] = useState(false);
-  const [hoveredFace, setHoveredFace] = useState(null);
-  const [showAssignModal, setShowAssignModal] = useState(null);
-  const [assignPersonName, setAssignPersonName] = useState("");
-  const [allClusters, setAllClusters] = useState([]);
-
-  // Reset image states when photo changes
-  useEffect(() => {
-    if (selectedPhoto) {
-      setImageLoading(true);
-      setImageError(false);
-    }
-  }, [selectedPhoto]);
 
   useEffect(() => {
-    const fetchClusterDetail = async () => {
+    let ignore = false;
+
+    const loadCluster = async () => {
       try {
         setLoading(true);
         const data = await getClusterDetail(clusterId);
+        if (ignore) {
+          return;
+        }
         setCluster(data);
         setName(data.name || "");
         setError(null);
-      } catch (err) {
-        console.error("Error fetching cluster detail:", err);
-        setError("Failed to load collection details");
+      } catch {
+        if (!ignore) {
+          setError("Could not load this cluster.");
+        }
       } finally {
-        setLoading(false);
+        if (!ignore) {
+          setLoading(false);
+        }
       }
     };
 
-    const fetchAllClusters = async () => {
-      try {
-        const clusters = await getClusters({ limit: 1000 });
-        setAllClusters(clusters);
-      } catch (err) {
-        console.error("Error fetching clusters:", err);
-      }
-    };
+    loadCluster();
 
-    fetchClusterDetail();
-    fetchAllClusters();
-  }, [clusterId]);
+    return () => {
+      ignore = true;
+    };
+  }, [clusterId, refreshKey]);
+
+  useEffect(() => {
+    if (!selectedPhoto) {
+      return;
+    }
+    setImageLoading(true);
+    setImageError(false);
+  }, [selectedPhoto]);
+
+  const refreshCluster = async () => {
+    const data = await getClusterDetail(clusterId);
+    setCluster(data);
+    setName(data.name || "");
+    setError(null);
+  };
 
   const handleSaveName = async () => {
-    if (!name.trim()) {
+    const trimmed = name.trim();
+    if (!trimmed) {
       setIsEditingName(false);
-      setName(cluster.name || "");
+      setName(cluster?.name || "");
       return;
     }
 
     try {
-      await updateClusterName(clusterId, name.trim());
-      setCluster({ ...cluster, name: name.trim() });
+      await updateClusterName(clusterId, trimmed);
+      setCluster((previous) => ({ ...previous, name: trimmed, is_locked: true }));
       setIsEditingName(false);
-    } catch (err) {
-      console.error("Error updating cluster name:", err);
-      alert("Failed to update name");
-      setName(cluster.name || "");
+      setNotice({ tone: "success", text: "Cluster name updated." });
+    } catch {
+      setNotice({ tone: "error", text: "Could not update the cluster name." });
+      setName(cluster?.name || "");
+      setIsEditingName(false);
     }
   };
 
   const handleExcludeFace = async (faceId) => {
-    if (
-      !confirm(
-        "Mark this face as 'not this person'? This will help the system learn."
-      )
-    ) {
+    const confirmed = window.confirm(
+      "Remove this face from the current person cluster?"
+    );
+    if (!confirmed) {
       return;
     }
 
     try {
       await excludeFace(faceId);
-      // Reload cluster data
-      const data = await getClusterDetail(clusterId);
-      setCluster(data);
-      alert("Face excluded! Re-run clustering to apply this learning.");
-    } catch (err) {
-      console.error("Error excluding face:", err);
-      alert("Failed to exclude face");
+      await refreshCluster();
+      setNotice({
+        tone: "success",
+        text: "Face excluded. The next sync will use this correction as a negative signal.",
+      });
+    } catch {
+      setNotice({ tone: "error", text: "Could not exclude this face." });
     }
   };
 
   const handleSetRepresentative = async (faceId) => {
     try {
       await setRepresentativeFace(clusterId, faceId);
-      setCluster({ ...cluster, representative_face_id: faceId });
-      alert("Key photo set!");
-    } catch (err) {
-      console.error("Error setting representative:", err);
-      alert("Failed to set key photo");
+      await refreshCluster();
+      setNotice({
+        tone: "success",
+        text: "Representative face updated.",
+      });
+    } catch {
+      setNotice({ tone: "error", text: "Could not update the cover face." });
     }
   };
 
-  const handleAssignFace = async (face) => {
-    setShowAssignModal(face);
-    setAssignPersonName(cluster.name || "");
+  const handleOpenAssign = (face) => {
+    setAssignTargetFace(face);
+    setAssignPersonName(cluster?.name || "");
   };
 
   const handleConfirmAssign = async () => {
+    if (!assignTargetFace) {
+      return;
+    }
     if (!assignPersonName.trim()) {
-      alert("Please enter a person's name");
+      setNotice({ tone: "error", text: "Enter a name before reassigning." });
       return;
     }
 
     try {
-      await assignFaceToPerson(
-        showAssignModal.id,
-        assignPersonName.trim(),
-        clusterId
-      );
-      setShowAssignModal(null);
-      // Reload cluster
-      const data = await getClusterDetail(clusterId);
-      setCluster(data);
-      alert(
-        `Assigned to "${assignPersonName.trim()}"! Re-run clustering to apply this learning.`
-      );
-    } catch (err) {
-      console.error("Error assigning face:", err);
-      alert("Failed to assign face");
+      await assignFaceToPerson(assignTargetFace.id, assignPersonName.trim(), null);
+      setAssignTargetFace(null);
+      await refreshCluster();
+      setNotice({
+        tone: "success",
+        text: `Face reassigned to ${assignPersonName.trim()}.`,
+      });
+    } catch {
+      setNotice({ tone: "error", text: "Could not reassign this face." });
+    }
+  };
+
+  const handleOpenPhotoInBrowser = (photoId) => {
+    window.open(getPhotoImageUrl(photoId), "_blank", "noopener,noreferrer");
+  };
+
+  const handleRevealPhoto = async (photoId) => {
+    try {
+      await revealPhotoInFinder(photoId);
+      setNotice({
+        tone: "success",
+        text: "Opened the source file in Finder.",
+      });
+    } catch {
+      setNotice({
+        tone: "error",
+        text: "Could not reveal this file in Finder.",
+      });
     }
   };
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
-          <p className="mt-4 text-gray-600 dark:text-gray-400">
-            Loading collection...
-          </p>
-        </div>
-      </div>
+      <section className="surface-card rounded-[2rem] p-10 text-center">
+        <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-[var(--accent-soft)] border-t-[var(--accent)]" />
+        <p className="mt-4 muted-copy">Loading cluster details...</p>
+      </section>
     );
   }
 
   if (error) {
     return (
-      <div className="space-y-4">
+      <section className="surface-card rounded-[2rem] p-6">
         <button
+          type="button"
           onClick={onBack}
-          className="flex items-center space-x-2 text-blue-600 dark:text-blue-400 hover:underline"
+          className="secondary-button px-4 py-2 text-sm font-semibold"
         >
-          <span>←</span>
-          <span>Back to Collections</span>
+          Back to people
         </button>
-        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
-          <p className="text-red-800 dark:text-red-200">{error}</p>
-        </div>
-      </div>
+        <p className="mt-4 text-lg font-semibold text-[var(--text-primary)]">
+          {error}
+        </p>
+      </section>
     );
   }
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-4">
-          <button
-            onClick={onBack}
-            className="flex items-center space-x-2 text-blue-600 dark:text-blue-400 hover:underline"
-          >
-            <span className="text-xl">←</span>
-            <span>Back</span>
-          </button>
+      <section className="surface-card rounded-[2rem] p-6 sm:p-7">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+          <div className="space-y-4">
+            <button
+              type="button"
+              onClick={onBack}
+              className="secondary-button px-4 py-2 text-sm font-semibold"
+            >
+              Back to people
+            </button>
 
-          <div>
-            {isEditingName ? (
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSaveName();
-                  if (e.key === "Escape") {
-                    setIsEditingName(false);
-                    setName(cluster.name || "");
-                  }
-                }}
-                onBlur={handleSaveName}
-                autoFocus
-                className="text-3xl font-bold px-2 py-1 border border-blue-500 dark:border-blue-400 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
-                placeholder="Enter name..."
-              />
-            ) : (
-              <div className="flex items-center space-x-3">
-                <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-                  {cluster.name || "Unknown Person"}
-                </h1>
-                <button
-                  onClick={() => setIsEditingName(true)}
-                  className="text-gray-400 dark:text-gray-500 hover:text-blue-500 dark:hover:text-blue-400"
-                  title="Edit name"
-                >
-                  ✏️
-                </button>
-              </div>
-            )}
-            <p className="text-gray-600 dark:text-gray-400 mt-1">
-              {cluster.face_count} photo{cluster.face_count !== 1 ? "s" : ""} •
-              Collection #{cluster.id}
-            </p>
+            <div>
+              <p className="eyebrow">Cluster detail</p>
+              {isEditingName ? (
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      handleSaveName();
+                    }
+                    if (event.key === "Escape") {
+                      setName(cluster?.name || "");
+                      setIsEditingName(false);
+                    }
+                  }}
+                  onBlur={handleSaveName}
+                  autoFocus
+                  className="field-input mt-3 max-w-xl px-4 py-3 text-lg font-semibold"
+                  placeholder="Name this person"
+                />
+              ) : (
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <h1 className="section-title text-[var(--text-primary)]">
+                    {cluster?.name || "Untitled person"}
+                  </h1>
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingName(true)}
+                    className="secondary-button px-4 py-2 text-sm font-semibold"
+                  >
+                    Rename
+                  </button>
+                </div>
+              )}
+
+              <p className="mt-3 text-sm muted-copy">
+                {cluster?.face_count} faces in cluster #{cluster?.id}
+                {cluster?.is_locked ? " • locked by manual naming" : ""}
+              </p>
+            </div>
           </div>
+
+          <aside className="surface-card rounded-[1.75rem] p-5 xl:max-w-sm">
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[var(--accent)]">
+              Correction rules
+            </p>
+            <p className="mt-3 text-sm muted-copy">
+              Hover a face to exclude it, move it to another person, or make it
+              the representative thumbnail. Click the face to inspect the
+              original photo.
+            </p>
+          </aside>
         </div>
-      </div>
-      {/* Photo grid */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-        {cluster.faces?.map((face) => (
+
+        {notice && (
           <div
+            className={`note-banner mt-6 rounded-[1.35rem] p-4 text-sm ${
+              notice.tone === "error" ? "border-rose-400/40" : ""
+            }`}
+          >
+            {notice.text}
+          </div>
+        )}
+      </section>
+
+      <section className="grid gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
+        {cluster?.faces?.map((face) => (
+          <article
             key={face.id}
-            className="relative aspect-square bg-gray-100 dark:bg-gray-700 rounded-lg overflow-hidden group"
+            className="surface-card group relative cursor-zoom-in overflow-hidden rounded-[1.6rem]"
             onMouseEnter={() => setHoveredFace(face.id)}
             onMouseLeave={() => setHoveredFace(null)}
             onClick={() => setSelectedPhoto(face)}
           >
-            <img
-              src={getFaceCropUrl(face.id)}
-              alt={`Face ${face.id}`}
-              className="w-full h-full object-cover cursor-pointer"
-              loading="lazy"
-            />
+            <button
+              type="button"
+              onClick={() => setSelectedPhoto(face)}
+              className="block aspect-square w-full overflow-hidden bg-[var(--accent-faint)]"
+            >
+              <img
+                src={getFaceCropUrl(face.id)}
+                alt={`Face ${face.id}`}
+                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+                loading="lazy"
+              />
+            </button>
 
-            {/* Action buttons on hover */}
+            <div className="flex items-center justify-between gap-2 p-2.5">
+              <div>
+                <p className="text-[13px] font-semibold text-[var(--text-primary)]">
+                  Face #{face.id}
+                </p>
+                <p className="mt-1 text-[11px] muted-copy">
+                  Match confidence:{" "}
+                  {face.cluster_confidence
+                    ? `${Math.round(face.cluster_confidence * 100)}%`
+                    : "pending"}
+                </p>
+              </div>
+              {cluster?.representative_face_id === face.id && (
+                <span className="tag-pill">Cover</span>
+              )}
+            </div>
+
             {hoveredFace === face.id && (
-              <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center gap-2 p-2 pointer-events-none">
+              <div
+                className="absolute inset-0 flex cursor-zoom-in flex-col justify-end gap-2 bg-black/58 p-3 text-left"
+                onClick={() => setSelectedPhoto(face)}
+              >
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setSelectedPhoto(face);
+                  }}
+                  className="secondary-button w-full border border-white/12 bg-white/12 px-3 py-2 text-sm font-semibold text-white"
+                >
+                  View photo
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
                     handleExcludeFace(face.id);
                   }}
-                  className="w-full px-2 py-1 bg-red-500 hover:bg-red-600 text-white text-xs rounded pointer-events-auto"
-                  title="Mark as 'not this person'"
+                  className="secondary-button w-full border border-white/12 bg-white/12 px-3 py-2 text-sm font-semibold text-white"
                 >
-                  ✖ Not this person
+                  Not this person
                 </button>
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleAssignFace(face);
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    handleOpenAssign(face);
                   }}
-                  className="w-full px-2 py-1 bg-blue-500 hover:bg-blue-600 text-white text-xs rounded pointer-events-auto"
-                  title="Assign to different person"
+                  className="secondary-button w-full border border-white/12 bg-white/12 px-3 py-2 text-sm font-semibold text-white"
                 >
-                  ↔ Reassign
+                  Move to another person
                 </button>
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
                     handleSetRepresentative(face.id);
                   }}
-                  className="w-full px-2 py-1 bg-green-500 hover:bg-green-600 text-white text-xs rounded pointer-events-auto"
-                  title="Set as key photo for this cluster"
+                  className="primary-button w-full px-3 py-2 text-sm font-semibold"
                 >
-                  ⭐ Set as key
+                  Use as cover face
                 </button>
               </div>
             )}
-
-            {/* Key photo indicator */}
-            {cluster.representative_face_id === face.id && (
-              <div className="absolute top-1 right-1 bg-yellow-400 text-yellow-900 px-1 rounded text-xs font-bold">
-                ⭐
-              </div>
-            )}
-          </div>
+          </article>
         ))}
-      </div>{" "}
-      {/* Assign modal */}
-      {showAssignModal && (
+      </section>
+
+      {assignTargetFace && (
         <div
-          className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"
-          onClick={() => setShowAssignModal(null)}
+          className="modal-shell fixed inset-0 z-50 flex items-center justify-center p-4"
+          onClick={() => setAssignTargetFace(null)}
         >
           <div
-            className="bg-white dark:bg-gray-800 rounded-lg p-6 max-w-md w-full"
-            onClick={(e) => e.stopPropagation()}
+            className="surface-card w-full max-w-md rounded-[2rem] p-6"
+            onClick={(event) => event.stopPropagation()}
           >
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
-              Assign Face to Person
+            <p className="eyebrow">Reassign face</p>
+            <h3 className="section-title mt-3 text-[var(--text-primary)]">
+              Move this face to another identity.
             </h3>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-              Enter the person's name. The system will learn from this and apply
-              it when you re-cluster.
+            <p className="mt-3 text-sm muted-copy">
+              Use a name that already exists or type a brand-new one to create a
+              locked cluster.
             </p>
             <input
               type="text"
               value={assignPersonName}
-              onChange={(e) => setAssignPersonName(e.target.value)}
-              placeholder="Person's name..."
-              className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white mb-4"
+              onChange={(event) => setAssignPersonName(event.target.value)}
+              className="field-input mt-5 px-4 py-3 text-sm"
+              placeholder="Person name"
               autoFocus
-              onKeyPress={(e) => e.key === "Enter" && handleConfirmAssign()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  handleConfirmAssign();
+                }
+              }}
             />
-            <div className="flex gap-2">
+            <div className="mt-5 flex flex-wrap gap-3">
               <button
+                type="button"
                 onClick={handleConfirmAssign}
-                className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md font-medium"
+                className="primary-button flex-1 px-4 py-3 text-sm font-semibold"
               >
-                Assign
+                Save reassignment
               </button>
               <button
-                onClick={() => setShowAssignModal(null)}
-                className="flex-1 px-4 py-2 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-900 dark:text-white rounded-md font-medium"
+                type="button"
+                onClick={() => setAssignTargetFace(null)}
+                className="secondary-button px-4 py-3 text-sm font-semibold"
               >
                 Cancel
               </button>
@@ -327,77 +413,81 @@ const ClusterDetail = ({ clusterId, onBack }) => {
           </div>
         </div>
       )}
-      {/* Photo modal */}
+
       {selectedPhoto && (
         <div
-          className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4"
+          className="modal-shell fixed inset-0 z-50 flex items-center justify-center p-4"
           onClick={() => setSelectedPhoto(null)}
         >
           <div
-            className="max-w-4xl max-h-[90vh] bg-white dark:bg-gray-800 rounded-lg overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
+            className="surface-card flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-[2rem]"
+            onClick={(event) => event.stopPropagation()}
           >
-            <div className="p-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+            <div className="flex items-start justify-between gap-4 border-b border-[var(--border-soft)] p-5">
               <div>
-                <h3 className="font-semibold text-gray-900 dark:text-white">
-                  Photo {selectedPhoto.photo_id}
+                <p className="eyebrow">Original photo</p>
+                <h3 className="mt-2 text-xl font-semibold text-[var(--text-primary)]">
+                  Photo #{selectedPhoto.photo_id}
                 </h3>
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Confidence: {(selectedPhoto.confidence * 100).toFixed(1)}%
+                <p className="mt-2 text-sm muted-copy">
+                  Source: {selectedPhoto.photo_path}
                 </p>
               </div>
-              <button
-                onClick={() => setSelectedPhoto(null)}
-                className="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 text-2xl"
-              >
-                ×
-              </button>
+
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => handleOpenPhotoInBrowser(selectedPhoto.photo_id)}
+                  className="secondary-button px-4 py-2 text-sm font-semibold"
+                >
+                  Open image
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRevealPhoto(selectedPhoto.photo_id)}
+                  className="secondary-button px-4 py-2 text-sm font-semibold"
+                >
+                  Show in Finder
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPhoto(null)}
+                  className="secondary-button px-4 py-2 text-sm font-semibold"
+                >
+                  Close
+                </button>
+              </div>
             </div>
-            <div className="p-4">
+
+            <div className="min-h-[320px] flex-1 overflow-auto p-5">
               {imageLoading && (
-                <div className="flex items-center justify-center h-64">
-                  <div className="text-gray-400">Loading image...</div>
+                <div className="flex h-80 items-center justify-center">
+                  <div className="h-12 w-12 animate-spin rounded-full border-4 border-[var(--accent-soft)] border-t-[var(--accent)]" />
                 </div>
               )}
+
               {imageError && (
-                <div className="flex flex-col items-center justify-center h-64 text-red-500">
-                  <div>Failed to load image</div>
-                  <div className="text-sm mt-2">
-                    Photo ID: {selectedPhoto.photo_id}
-                  </div>
-                  <div className="text-xs mt-1 text-gray-400">
-                    URL: {getPhotoImageUrl(selectedPhoto.photo_id)}
-                  </div>
+                <div className="flex h-80 items-center justify-center text-sm muted-copy">
+                  The original photo could not be loaded.
                 </div>
               )}
+
               <img
                 src={getPhotoImageUrl(selectedPhoto.photo_id)}
                 alt={`Photo ${selectedPhoto.photo_id}`}
-                className={`max-w-full max-h-[70vh] mx-auto ${
-                  imageLoading || imageError ? "hidden" : ""
+                className={`mx-auto max-h-[70vh] max-w-full rounded-[1.5rem] ${
+                  imageLoading || imageError ? "hidden" : "block"
                 }`}
                 onLoadStart={() => {
                   setImageLoading(true);
                   setImageError(false);
                 }}
                 onLoad={() => setImageLoading(false)}
-                onError={(e) => {
-                  console.error("Image load error:", {
-                    photo_id: selectedPhoto.photo_id,
-                    url: e.target.src,
-                    error: e,
-                  });
+                onError={() => {
                   setImageLoading(false);
                   setImageError(true);
                 }}
               />
-            </div>
-            <div className="p-4 bg-gray-50 dark:bg-gray-900 text-xs text-gray-500 dark:text-gray-400">
-              <p>Photo ID: {selectedPhoto.photo_id}</p>
-              <p>Path: {selectedPhoto.photo_path}</p>
-              <p className="mt-1 text-gray-600 dark:text-gray-500">
-                Confidence: {(selectedPhoto.confidence * 100).toFixed(1)}%
-              </p>
             </div>
           </div>
         </div>

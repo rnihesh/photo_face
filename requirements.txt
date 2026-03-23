@@ -6,6 +6,7 @@ mlx-lm
 face-recognition
 dlib
 Pillow
+pillow-heif
 
 # PyTorch with Metal Performance Shaders (MPS) for GPU acceleration
 torch
@@ -21,6 +22,7 @@ rich
 # API Backend
 fastapi
 uvicorn[standard]
+redis
 
 # Data processing and clustering
 numpy
@@ -28,6 +30,7 @@ scikit-learn
 
 # Configuration
 python-dotenv
+setuptools
 
 # Logging
 loguru

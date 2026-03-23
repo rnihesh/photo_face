@@ -1,134 +1,160 @@
-import { useState, useEffect } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { getClusters } from "../services/api";
 import ClusterCard from "./ClusterCard";
 
-const ClusterList = ({ onSelectCluster }) => {
+const PAGE_SIZE = 40;
+
+const ClusterList = ({ onSelectCluster, refreshKey }) => {
   const [clusters, setClusters] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
-  const [filters, setFilters] = useState({
-    minFaces: 1,
-    skip: 0,
-    limit: 50,
-  });
+  const [search, setSearch] = useState("");
+  const [minFaces, setMinFaces] = useState(1);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+
+  const deferredSearch = useDeferredValue(search.trim());
+  const querySignature = useMemo(
+    () => `${minFaces}:${deferredSearch}:${refreshKey}`,
+    [deferredSearch, minFaces, refreshKey]
+  );
 
   useEffect(() => {
+    setPage(0);
+    setClusters([]);
+  }, [querySignature]);
+
+  useEffect(() => {
+    let ignore = false;
+
     const fetchClusters = async () => {
       try {
-        setLoading(true);
+        if (page === 0) {
+          setLoading(true);
+        } else {
+          setLoadingMore(true);
+        }
+
         const data = await getClusters({
-          min_faces: filters.minFaces,
-          skip: filters.skip,
-          limit: filters.limit,
+          min_faces: minFaces,
+          skip: page * PAGE_SIZE,
+          limit: PAGE_SIZE,
+          search: deferredSearch || undefined,
         });
-        setClusters(data);
+
+        if (ignore) {
+          return;
+        }
+
+        setClusters((previous) => (page === 0 ? data : [...previous, ...data]));
+        setHasMore(data.length === PAGE_SIZE);
         setError(null);
-      } catch (err) {
-        setError("Failed to load face collections");
-        console.error("Error fetching clusters:", err);
+      } catch {
+        if (!ignore) {
+          setError("Failed to load face clusters.");
+        }
       } finally {
-        setLoading(false);
+        if (!ignore) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
       }
     };
 
     fetchClusters();
-  }, [filters]);
 
-  const handleLoadMore = () => {
-    setFilters((prev) => ({ ...prev, skip: prev.skip + prev.limit }));
-  };
+    return () => {
+      ignore = true;
+    };
+  }, [page, minFaces, deferredSearch, refreshKey]);
 
   if (loading && clusters.length === 0) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
-          <p className="mt-4 text-gray-600 dark:text-gray-400">
-            Loading collections...
-          </p>
-        </div>
-      </div>
+      <section className="surface-card rounded-[2rem] p-10 text-center">
+        <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-[var(--accent-soft)] border-t-[var(--accent)]" />
+        <p className="mt-4 muted-copy">Loading people clusters...</p>
+      </section>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
-        <p className="text-red-800 dark:text-red-200">{error}</p>
-      </div>
-    );
-  }
-
-  if (clusters.length === 0) {
-    return (
-      <div className="text-center py-12">
-        <div className="text-6xl mb-4">📭</div>
-        <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
-          No face collections found
-        </h3>
-        <p className="text-gray-600 dark:text-gray-400">
-          Run the clustering script to group detected faces
-        </p>
-      </div>
+      <section className="surface-card rounded-[2rem] p-6 text-center">
+        <p className="text-lg font-semibold text-[var(--text-primary)]">{error}</p>
+      </section>
     );
   }
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
-            Face Collections
-          </h2>
-          <p className="text-gray-600 dark:text-gray-400 mt-1">
-            {clusters.length} collection{clusters.length !== 1 ? "s" : ""} found
-          </p>
-        </div>
+      <section className="surface-card rounded-[2rem] p-6 sm:p-7">
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="eyebrow">People browser</p>
+            <h2 className="section-title mt-3 text-[var(--text-primary)]">
+              Browse clusters, name them, and correct misses quickly.
+            </h2>
+            <p className="mt-3 text-sm muted-copy">
+              {clusters.length} cluster{clusters.length === 1 ? "" : "s"} in
+              the current view
+            </p>
+          </div>
 
-        <div className="flex items-center space-x-4">
-          <label className="flex items-center space-x-2">
-            <span className="text-sm text-gray-700 dark:text-gray-300">
-              Min faces:
-            </span>
+          <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+            <input
+              type="text"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search by person name or cluster id"
+              className="field-input px-4 py-3 text-sm"
+            />
+
             <select
-              value={filters.minFaces}
-              onChange={(e) =>
-                setFilters((prev) => ({
-                  ...prev,
-                  minFaces: parseInt(e.target.value),
-                  skip: 0,
-                }))
-              }
-              className="px-3 py-1 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
+              value={minFaces}
+              onChange={(event) => setMinFaces(Number(event.target.value))}
+              className="field-select px-4 py-3 text-sm"
             >
-              <option value="1">1+</option>
-              <option value="3">3+</option>
-              <option value="5">5+</option>
-              <option value="10">10+</option>
-              <option value="20">20+</option>
+              <option value={1}>1+ faces</option>
+              <option value={3}>3+ faces</option>
+              <option value={5}>5+ faces</option>
+              <option value={10}>10+ faces</option>
+              <option value={20}>20+ faces</option>
             </select>
-          </label>
+          </div>
         </div>
-      </div>
+      </section>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-        {clusters.map((cluster) => (
-          <ClusterCard
-            key={cluster.id}
-            cluster={cluster}
-            onClick={() => onSelectCluster(cluster.id)}
-          />
-        ))}
-      </div>
+      {clusters.length === 0 ? (
+        <section className="surface-card rounded-[2rem] p-10 text-center">
+          <p className="section-title text-[var(--text-primary)]">
+            No clusters match this view.
+          </p>
+          <p className="mt-3 muted-copy">
+            Try lowering the minimum face count or clearing the search filter.
+          </p>
+        </section>
+      ) : (
+        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+          {clusters.map((cluster) => (
+            <ClusterCard
+              key={cluster.id}
+              cluster={cluster}
+              onClick={() => onSelectCluster(cluster.id)}
+            />
+          ))}
+        </section>
+      )}
 
-      {clusters.length >= filters.limit && (
-        <div className="text-center">
+      {hasMore && (
+        <div className="flex justify-center">
           <button
-            onClick={handleLoadMore}
-            disabled={loading}
-            className="px-6 py-3 bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            type="button"
+            onClick={() => setPage((value) => value + 1)}
+            disabled={loadingMore}
+            className="secondary-button px-5 py-3 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {loading ? "Loading..." : "Load More"}
+            {loadingMore ? "Loading more clusters" : "Load more"}
           </button>
         </div>
       )}

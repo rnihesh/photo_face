@@ -6,11 +6,42 @@ No external model downloads required - uses built-in models.
 """
 
 import os
+import sys
+import types
+import importlib
+import importlib.resources
+import subprocess
+import tempfile
 import numpy as np
-import face_recognition
 from PIL import Image
 from typing import List, Tuple, Optional
 from loguru import logger
+
+
+def _install_pkg_resources_compat():
+    """
+    face_recognition_models still imports pkg_resources.resource_filename.
+    Modern setuptools on Python 3.13 may not ship pkg_resources, so provide the
+    tiny compatibility surface that package needs.
+    """
+
+    if "pkg_resources" in sys.modules:
+        return
+
+    module = types.ModuleType("pkg_resources")
+
+    def resource_filename(package_name, resource_name):
+        package = importlib.import_module(package_name)
+        resource = importlib.resources.files(package).joinpath(resource_name)
+        return str(resource)
+
+    module.resource_filename = resource_filename
+    sys.modules["pkg_resources"] = module
+
+
+_install_pkg_resources_compat()
+
+import face_recognition
 
 # Enable HEIC/HEIF support for iPhone photos
 try:
@@ -20,14 +51,18 @@ try:
 except ImportError:
     logger.warning("pillow-heif not installed - HEIC images won't be supported")
 
-# Try to import MLX for Apple Silicon NPU optimization
-try:
-    import mlx.core as mx
-    MLX_AVAILABLE = True
-    logger.info("MLX (Apple Neural Engine) available for acceleration")
-except ImportError:
-    MLX_AVAILABLE = False
-    logger.warning("MLX not available - install for better NPU acceleration")
+# MLX is disabled by default here. Importing it eagerly has been crashing on
+# some local Apple Silicon environments, and this detector path does not
+# actually depend on MLX for inference.
+MLX_AVAILABLE = False
+if os.getenv("ENABLE_MLX_ACCELERATION", "false").lower() in {"1", "true", "yes"}:
+    try:
+        import mlx.core as mx  # noqa: F401
+
+        MLX_AVAILABLE = True
+        logger.info("MLX (Apple Neural Engine) available for acceleration")
+    except Exception as exc:
+        logger.warning("MLX unavailable, continuing without it: {}", exc)
 
 # Try to import PyTorch for GPU acceleration
 try:
@@ -86,8 +121,9 @@ class FaceDetector:
             return [], [], []
         
         try:
-            # Load image
-            image = face_recognition.load_image_file(image_path)
+            # Load image, with macOS HEIC fallback through sips when pillow-heif
+            # is unavailable.
+            image = self._load_image(image_path)
             
             # Detect faces
             face_locations = face_recognition.face_locations(image, model=self.model)
@@ -106,6 +142,25 @@ class FaceDetector:
         except Exception as e:
             logger.error(f"Error detecting faces in {image_path}: {e}")
             return [], [], []
+
+    def _load_image(self, image_path: str):
+        ext = os.path.splitext(image_path)[1].lower()
+        if ext not in {".heic", ".heif"}:
+            return face_recognition.load_image_file(image_path)
+
+        try:
+            return face_recognition.load_image_file(image_path)
+        except Exception:
+            converted = _convert_heic_with_sips(image_path)
+            if not converted:
+                raise
+            try:
+                return face_recognition.load_image_file(converted)
+            finally:
+                try:
+                    os.unlink(converted)
+                except OSError:
+                    pass
     
     def batch_detect_faces(self, image_paths: List[str]) -> List[Tuple[str, List, List, List]]:
         """
@@ -148,10 +203,15 @@ class FaceDetector:
 
 def get_image_dimensions(image_path: str) -> Tuple[Optional[int], Optional[int]]:
     """Get image dimensions without loading the full image."""
+    ext = os.path.splitext(image_path)[1].lower()
     try:
         with Image.open(image_path) as img:
             return img.width, img.height
     except Exception as e:
+        if ext in {".heic", ".heif"}:
+            dimensions = _get_heic_dimensions_with_sips(image_path)
+            if dimensions != (None, None):
+                return dimensions
         logger.error(f"Error getting dimensions for {image_path}: {e}")
         return None, None
 
@@ -163,6 +223,63 @@ def is_valid_image(file_path: str, extensions: List[str] = None) -> bool:
     
     ext = os.path.splitext(file_path)[1].lower()
     return ext in extensions
+
+
+def _convert_heic_with_sips(image_path: str) -> Optional[str]:
+    """
+    Use macOS built-in sips to convert HEIC/HEIF images to a temporary JPEG.
+    """
+
+    fd, temp_path = tempfile.mkstemp(suffix=".jpg", prefix="photo_face_")
+    os.close(fd)
+
+    result = subprocess.run(
+        ["sips", "-s", "format", "jpeg", image_path, "--out", temp_path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        logger.error(
+            "sips failed to convert {}: {}",
+            image_path,
+            (result.stderr or result.stdout).strip(),
+        )
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        return None
+
+    return temp_path
+
+
+def _get_heic_dimensions_with_sips(image_path: str) -> Tuple[Optional[int], Optional[int]]:
+    result = subprocess.run(
+        ["sips", "-g", "pixelWidth", "-g", "pixelHeight", image_path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        logger.error(
+            "sips failed to read dimensions for {}: {}",
+            image_path,
+            (result.stderr or result.stdout).strip(),
+        )
+        return None, None
+
+    width = None
+    height = None
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("pixelWidth:"):
+            width = int(line.split(":", 1)[1].strip())
+        elif line.startswith("pixelHeight:"):
+            height = int(line.split(":", 1)[1].strip())
+    return width, height
 
 
 if __name__ == "__main__":

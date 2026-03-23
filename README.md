@@ -8,10 +8,12 @@ A high-performance face detection and clustering system optimized for Apple Sili
 - 📸 **Non-destructive** - Read-only access to your photos (never modifies originals)
 - ⏸️ **Resumable** - Checkpoint system allows you to stop and resume scanning anytime
 - 📊 **Progress Tracking** - Real-time progress bars at every step with tqdm and rich
-- 🎯 **Face Clustering** - Automatically groups similar faces using DBSCAN algorithm
+- 🎯 **Stable Face Clustering** - Uses incremental clustering with stable cluster IDs instead of raw DBSCAN labels
 - 🌐 **Modern UI** - Beautiful React frontend with Tailwind CSS and dark mode
 - 💾 **Efficient Storage** - Stores only face embeddings and metadata, not photos
-- 🔄 **Real-time Updates** - API-driven architecture with FastAPI backend
+- 🔄 **Incremental Sync** - Backend detects only new or changed photos when the drive is available
+- 🧠 **Learned Corrections** - Manual exclusions and reassignments improve later clustering
+- 🧰 **Redis Runtime State** - Sync status, locks, and API caching use Redis when available
 
 ## 🖥️ System Requirements
 
@@ -70,7 +72,39 @@ Frontend already has Tailwind CSS and Axios configured! ✅
 
 ## 🚀 Usage
 
-### Step 1: Scan Photos and Detect Faces
+### Step 1: Configure the Photo Library and Redis
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+Recommended settings:
+
+```bash
+PHOTOS_PATH=/Volumes/Elements
+REDIS_URL=redis://localhost:6379/0
+AUTO_SYNC_ON_STARTUP=true
+```
+
+### Step 2: Start the API Server
+
+```bash
+cd /Users/nihesh/Nihesh/photo_face
+source .venv/bin/activate
+python backend/api.py
+```
+
+**What this does on startup:**
+
+- Checks whether `PHOTOS_PATH` is available
+- Detects only new or modified photos
+- Processes only those files
+- Reclusters only when there are new embeddings or pending cluster work
+
+You can also trigger sync manually from the UI or `POST /sync/run`.
+
+### Step 3: Optional CLI Scan
 
 ```bash
 # Make sure you're in the project root with venv activated
@@ -81,7 +115,7 @@ python backend/scan_photos.py
 **What this does:**
 
 - Recursively scans your photos directory
-- Detects faces in each photo using InsightFace (optimized for Apple Silicon)
+- Detects faces in each photo using local open-source face-recognition models
 - Generates 128-dimensional face embeddings
 - Saves progress continuously (you can stop and resume anytime!)
 - Shows beautiful progress bars with file names and stats
@@ -95,37 +129,34 @@ python backend/scan_photos.py --path /path/to/photos
 # Disable resume (reprocess all)
 python backend/scan_photos.py --no-resume
 
-# Adjust batch size
-python backend/scan_photos.py --batch-size 64
 ```
 
-### Step 2: Cluster Faces
+### Step 4: Optional CLI Rebuild
 
 ```bash
-python backend/cluster_faces.py
+python backend/cluster_faces.py --rebuild
 ```
 
 **What this does:**
 
-- Groups similar face embeddings using DBSCAN algorithm
-- Creates collections of the same person across multiple photos
-- Shows clustering statistics and top collections
+- Rebuilds clusters using the current incremental clustering algorithm
+- Preserves locked or manually named clusters where possible
+- Reuses manual corrections as positive or negative learning signals
+
+If you want a clean recluster without deleting scanned faces, run this first:
+
+```bash
+python backend/reset_clustering.py
+```
 
 **Optional arguments:**
 
 ```bash
 # Minimum faces per cluster
-python backend/cluster_faces.py --min-size 5
+python backend/cluster_faces.py --rebuild --min-size 5
 
 # Clustering distance threshold (lower = stricter)
-python backend/cluster_faces.py --eps 0.4
-```
-
-### Step 3: Start the API Server
-
-```bash
-cd backend
-python api.py
+python backend/cluster_faces.py --rebuild --eps 0.28
 ```
 
 Or with uvicorn directly:
@@ -137,12 +168,12 @@ uvicorn api:app --reload --host 0.0.0.0 --port 8000
 **API will be available at:** `http://localhost:8000`
 **API docs:** `http://localhost:8000/docs`
 
-### Step 4: Start the React Frontend
+### Step 5: Start the React Frontend
 
 **In a new terminal:**
 
 ```bash
-cd frontend
+cd /Users/nihesh/Nihesh/photo_face/frontend
 npm run dev
 ```
 
@@ -156,17 +187,20 @@ npm run dev
    - Number of face collections
 2. **Collections** - Browse and manage face collections
    - Grid view of all people detected
+   - Search by name or cluster id
    - Filter by minimum photo count
    - Click on any collection to see all photos
 3. **Naming People**
-   - Double-click on any collection name to edit
-   - Or click the edit (✏️) button
-   - Press Enter to save, Escape to cancel
+   - Rename clusters from the card or detail view
+   - Naming a person locks that cluster as a stronger identity seed
 4. **View Photos**
    - Click on any face collection
-   - See all photos of that person
-   - Click on any photo to view full size
-5. **Dark Mode** - Toggle with the 🌙/☀️ button in the header
+   - Exclude wrong matches or move a face to another person
+   - Set a representative face for the cluster
+   - Click on any photo to view the original image
+5. **Sync Status**
+   - Header shows whether the backend is discovering, processing, clustering, waiting, or ready
+   - Trigger incremental sync directly from the UI
 
 ## 📁 Project Structure
 
@@ -210,17 +244,19 @@ DATABASE_PATH=./photo_face.db
 # API settings
 API_HOST=0.0.0.0
 API_PORT=8000
-
-# Processing settings
-BATCH_SIZE=32
-MAX_WORKERS=4
+API_RELOAD=false
 
 # Face detection model: 'hog' (faster) or 'cnn' (more accurate)
 FACE_DETECTION_MODEL=hog
 
 # Clustering settings
 MIN_CLUSTER_SIZE=3
-CLUSTER_EPSILON=0.5
+CLUSTER_DBSCAN_EPSILON=0.34
+CLUSTER_REFINE_EPSILON=0.36
+CLUSTER_ASSIGN_EPSILON=0.30
+LOCKED_CLUSTER_ASSIGN_EPSILON=0.28
+CLUSTER_MERGE_EPSILON=0.29
+CLUSTER_ASSIGN_MARGIN=0.04
 
 # Supported image formats
 IMAGE_EXTENSIONS=.jpg,.jpeg,.png,.bmp,.tiff,.tif,.heic,.heif
@@ -231,16 +267,16 @@ IMAGE_EXTENSIONS=.jpg,.jpeg,.png,.bmp,.tiff,.tif,.heic,.heif
 ### 1. **Scanning Phase**
 
 - Recursively walks through your photo directories
-- Uses InsightFace with ONNX Runtime for face detection
-- Optimized for Apple Silicon with Metal acceleration
-- Generates 128-dimensional face embeddings using deep learning
+- Uses local open-source face-recognition models for detection and embeddings
+- Can use Apple Silicon acceleration where available
+- Generates 128-dimensional face embeddings
 - Stores embeddings in SQLite database (not the photos!)
 
 ### 2. **Clustering Phase**
 
 - Retrieves all face embeddings from database
-- Normalizes embeddings for better clustering
-- Uses DBSCAN (Density-Based Spatial Clustering) algorithm
+- Uses raw Euclidean face distances instead of over-normalized cosine distances
+- Uses DBSCAN plus a refinement pass to stop giant chain-merged clusters
 - Groups similar faces together (same person across photos)
 - Each cluster = one person
 
@@ -254,7 +290,7 @@ IMAGE_EXTENSIONS=.jpg,.jpeg,.png,.bmp,.tiff,.tif,.heic,.heif
 ## 🚄 Performance Tips
 
 - **First scan is slowest** - Subsequent scans only process new photos
-- **Batch processing** - Optimizes memory usage for large collections
+- **Incremental processing** - New scans only touch new, changed, or pending photos
 - **Progress is saved** - Stop anytime, resume where you left off
 - **MLX & MPS** - Automatically uses Apple Silicon GPU/NPU when available
 - **Read-only** - Never modifies your original photos
@@ -292,11 +328,11 @@ python backend/cluster_faces.py
 ### Re-clustering with Different Parameters
 
 ```bash
-# Stricter clustering (fewer, larger groups)
-python backend/cluster_faces.py --eps 0.4 --min-size 5
+# More conservative clustering (more unclustered faces, fewer false merges)
+python backend/cluster_faces.py --eps 0.32 --min-size 3
 
-# Looser clustering (more, smaller groups)
-python backend/cluster_faces.py --eps 0.7 --min-size 2
+# More merging (fewer groups, higher risk of mixing people)
+python backend/cluster_faces.py --eps 0.38 --min-size 3
 ```
 
 ## 🐛 Troubleshooting
@@ -325,19 +361,14 @@ API_PORT=8001 python backend/api.py
 
 ### Clustering Creates Too Many/Few Groups
 
-- **Too many groups?** Increase `CLUSTER_EPSILON` (e.g., 0.7)
-- **Too few groups?** Decrease `CLUSTER_EPSILON` (e.g., 0.4)
+- **Too many unclustered faces or too many small groups?** Increase `CLUSTER_DBSCAN_EPSILON` slightly, for example `0.34 -> 0.35`
+- **Too many people merged together?** Decrease `CLUSTER_DBSCAN_EPSILON` slightly, for example `0.34 -> 0.33`
 - Adjust `MIN_CLUSTER_SIZE` to change minimum faces per person
 
 ### Performance Issues
 
-```bash
-# Reduce batch size if running out of memory
-python backend/scan_photos.py --batch-size 16
-
-# Increase for faster processing (if you have RAM)
-python backend/scan_photos.py --batch-size 64
-```
+- Keep Redis running if you want cached API responses and sync status shared across processes
+- Use `FACE_DETECTION_MODEL=hog` unless you have a good reason to trade speed for accuracy
 
 ## 🔐 Privacy & Security
 

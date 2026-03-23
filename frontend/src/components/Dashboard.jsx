@@ -1,116 +1,202 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { getStats } from "../services/api";
 
-const StatsCard = ({ title, value, icon, subtitle }) => (
-  <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md p-6 border border-gray-200 dark:border-gray-700">
-    <div className="flex items-center justify-between">
-      <div>
-        <p className="text-sm font-medium text-gray-600 dark:text-gray-400">
-          {title}
-        </p>
-        <p className="text-3xl font-bold text-gray-900 dark:text-white mt-2">
-          {value}
-        </p>
-        {subtitle && (
-          <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">
-            {subtitle}
-          </p>
-        )}
-      </div>
-      <div className="text-4xl">{icon}</div>
-    </div>
-  </div>
+const StatCard = ({ title, value, caption, tone }) => (
+  <article className="metric-card rounded-[1.75rem] p-5">
+    <p className="soft-copy text-sm uppercase tracking-[0.18em]">{title}</p>
+    <p
+      className={`mt-3 text-4xl font-semibold tracking-tight ${
+        tone === "accent"
+          ? "text-[var(--accent-strong)] dark:text-[var(--accent-strong)]"
+          : tone === "success"
+          ? "text-[var(--success)]"
+          : "text-[var(--text-primary)]"
+      }`}
+    >
+      {value}
+    </p>
+    <p className="mt-2 text-sm muted-copy">{caption}</p>
+  </article>
 );
 
-const Dashboard = () => {
+const Dashboard = ({
+  apiStatus,
+  syncStatus,
+  onOpenCollections,
+  onSync,
+  refreshKey,
+}) => {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    if (apiStatus !== "connected") {
+      setLoading(false);
+      return;
+    }
+
+    let ignore = false;
+
     const fetchStats = async () => {
       try {
         setLoading(true);
         const data = await getStats();
+        if (ignore) {
+          return;
+        }
         setStats(data);
         setError(null);
-      } catch (err) {
-        setError(
-          "Failed to load statistics. Make sure the API server is running."
-        );
-        console.error("Error fetching stats:", err);
+      } catch {
+        if (ignore) {
+          return;
+        }
+        setError("Could not load dashboard stats.");
       } finally {
-        setLoading(false);
+        if (!ignore) {
+          setLoading(false);
+        }
       }
     };
 
     fetchStats();
-    // Refresh stats every 30 seconds
-    const interval = setInterval(fetchStats, 30000);
-    return () => clearInterval(interval);
-  }, []);
+    const interval = window.setInterval(fetchStats, 30000);
 
-  if (loading) {
+    return () => {
+      ignore = true;
+      window.clearInterval(interval);
+    };
+  }, [apiStatus, refreshKey]);
+
+  if (apiStatus !== "connected") {
+    return null;
+  }
+
+  const reviewCount =
+    (stats?.pending_cluster_faces || 0) + (stats?.unclustered_faces || 0);
+
+  if (loading && !stats) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
-      </div>
+      <section className="surface-card rounded-[2rem] p-10 text-center">
+        <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-[var(--accent-soft)] border-t-[var(--accent)]" />
+        <p className="mt-4 muted-copy">Loading your library overview...</p>
+      </section>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
-        <p className="text-red-800 dark:text-red-200">{error}</p>
-      </div>
+      <section className="surface-card rounded-[2rem] p-6 text-center">
+        <p className="text-lg font-semibold text-[var(--text-primary)]">{error}</p>
+      </section>
     );
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-          Dashboard
-        </h1>
-        <p className="text-gray-600 dark:text-gray-400 mt-2">
-          Overview of your photo face collection
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <StatsCard
-          title="Total Photos"
-          value={stats?.total_photos?.toLocaleString() || 0}
-          icon="📸"
-          subtitle={`${stats?.processed_photos || 0} processed`}
+    <div className="space-y-8">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard
+          title="Photos indexed"
+          value={stats?.total_photos?.toLocaleString() || "0"}
+          caption={`${stats?.processed_photos?.toLocaleString() || 0} already processed`}
+          tone="accent"
         />
-
-        <StatsCard
-          title="Faces Detected"
-          value={stats?.total_faces?.toLocaleString() || 0}
-          icon="👤"
-          subtitle={`Across all photos`}
+        <StatCard
+          title="Faces detected"
+          value={stats?.total_faces?.toLocaleString() || "0"}
+          caption="Raw detections available for clustering"
         />
-
-        <StatsCard
-          title="Face Collections"
-          value={stats?.total_clusters?.toLocaleString() || 0}
-          icon="👥"
-          subtitle={`${stats?.named_clusters || 0} named`}
+        <StatCard
+          title="People groups"
+          value={stats?.total_clusters?.toLocaleString() || "0"}
+          caption={`${stats?.named_clusters?.toLocaleString() || 0} clusters already named`}
+          tone="success"
         />
-      </div>
+        <StatCard
+          title="Needs review"
+          value={reviewCount.toLocaleString()}
+          caption={`${stats?.unclustered_faces || 0} faces are still unclustered`}
+        />
+      </section>
 
-      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-6">
-        <h3 className="text-lg font-semibold text-blue-900 dark:text-blue-100 mb-2">
-          🎯 Quick Actions
-        </h3>
-        <ul className="space-y-2 text-blue-800 dark:text-blue-200">
-          <li>• Click on &quot;Collections&quot; to browse and name people</li>
-          <li>• Each collection groups photos of the same person</li>
-          <li>• Click on a collection to see all photos of that person</li>
-          <li>• Double-click a collection name to rename it</li>
-        </ul>
-      </div>
+      <section className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
+        <article className="surface-card rounded-[2rem] p-6 sm:p-7">
+          <p className="eyebrow">What changed</p>
+          <h2 className="section-title mt-3 text-[var(--text-primary)]">
+            The backend now behaves like an always-on librarian.
+          </h2>
+          <div className="mt-5 grid gap-4 md:grid-cols-3">
+            <div className="rounded-[1.5rem] bg-[var(--accent-faint)] p-4">
+              <p className="text-sm font-semibold text-[var(--text-primary)]">
+                New-photo detection
+              </p>
+              <p className="mt-2 text-sm muted-copy">
+                Only new or modified files are reprocessed when the drive is
+                connected and the backend starts.
+              </p>
+            </div>
+            <div className="rounded-[1.5rem] bg-[var(--accent-faint)] p-4">
+              <p className="text-sm font-semibold text-[var(--text-primary)]">
+                Stable clustering
+              </p>
+              <p className="mt-2 text-sm muted-copy">
+                Existing clusters keep their identities instead of reusing raw
+                DBSCAN labels every run.
+              </p>
+            </div>
+            <div className="rounded-[1.5rem] bg-[var(--accent-faint)] p-4">
+              <p className="text-sm font-semibold text-[var(--text-primary)]">
+                Learned corrections
+              </p>
+              <p className="mt-2 text-sm muted-copy">
+                Manual exclusions and assignments become seeds for later syncs.
+              </p>
+            </div>
+          </div>
+        </article>
+
+        <article className="surface-card rounded-[2rem] p-6 sm:p-7">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="eyebrow">Sync briefing</p>
+              <h2 className="section-title mt-3 text-[var(--text-primary)]">
+                Current library pulse
+              </h2>
+            </div>
+            <span className="tag-pill">{syncStatus.status}</span>
+          </div>
+
+          <div className="mt-5 space-y-3 text-sm muted-copy">
+            <p>{syncStatus.message}</p>
+            <p>Path: {syncStatus.path || "Waiting for your configured photo drive"}</p>
+            <p>Cache backend: {stats?.cache_backend || syncStatus.cache_backend}</p>
+          </div>
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={onOpenCollections}
+              className="primary-button px-5 py-3 text-sm font-semibold"
+            >
+              Browse people clusters
+            </button>
+            <button
+              type="button"
+              onClick={() => onSync({ forceRescan: false, forceRecluster: false })}
+              className="secondary-button px-5 py-3 text-sm font-semibold"
+            >
+              Run incremental sync
+            </button>
+            <button
+              type="button"
+              onClick={() => onSync({ forceRescan: false, forceRecluster: true })}
+              className="ghost-button px-5 py-3 text-sm font-semibold"
+            >
+              Rebuild clustering
+            </button>
+          </div>
+        </article>
+      </section>
     </div>
   );
 };
