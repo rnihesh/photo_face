@@ -248,6 +248,9 @@ API_RELOAD=false
 
 # Face detection model: 'hog' (faster) or 'cnn' (more accurate)
 FACE_DETECTION_MODEL=hog
+SCAN_WORKERS=0
+ENABLE_FILE_HASH=false
+PREBUILD_FACE_CROPS=false
 
 # Clustering settings
 MIN_CLUSTER_SIZE=3
@@ -291,6 +294,9 @@ IMAGE_EXTENSIONS=.jpg,.jpeg,.png,.bmp,.tiff,.tif,.heic,.heif
 
 - **First scan is slowest** - Subsequent scans only process new photos
 - **Incremental processing** - New scans only touch new, changed, or pending photos
+- **Parallel scan workers** - Set `SCAN_WORKERS` above `0` to process multiple photos at once
+- **Hashing disabled by default** - `ENABLE_FILE_HASH=false` avoids rereading every full file unnecessarily
+- **HDD-friendly browsing** - `PREBUILD_FACE_CROPS=true` warms face thumbnails onto local cache during scan
 - **Progress is saved** - Stop anytime, resume where you left off
 - **MLX & MPS** - Automatically uses Apple Silicon GPU/NPU when available
 - **Read-only** - Never modifies your original photos

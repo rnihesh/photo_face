@@ -30,6 +30,12 @@ except ImportError:
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.database import Cluster, DatabaseManager, Face, FaceCorrection, Photo
+from backend.image_cache import (
+    CACHE_DIR,
+    THUMBNAIL_SIZE,
+    build_face_crop_cache,
+    get_face_cache_path,
+)
 from backend.redis_cache import RedisCache
 from backend.sync_service import SyncService
 
@@ -53,9 +59,6 @@ db = DatabaseManager()
 cache = RedisCache()
 sync_service = SyncService(db=db, cache=cache)
 
-CACHE_DIR = Path("/tmp/photo_face_cache")
-CACHE_DIR.mkdir(exist_ok=True)
-THUMBNAIL_SIZE = (180, 180)
 AUTO_SYNC_ON_STARTUP = os.getenv("AUTO_SYNC_ON_STARTUP", "true").lower() in {
     "1",
     "true",
@@ -363,7 +366,7 @@ async def get_clusters_by_name(name: str):
 
 
 @app.get("/photos/{photo_id}", response_model=PhotoInfo)
-async def get_photo_info(photo_id: int):
+def get_photo_info(photo_id: int):
     session = db.get_session()
     try:
         photo = session.query(Photo).filter_by(id=photo_id).first()
@@ -381,7 +384,7 @@ async def get_photo_info(photo_id: int):
 
 
 @app.get("/photos/{photo_id}/image")
-async def get_photo_image(photo_id: int):
+def get_photo_image(photo_id: int):
     session = db.get_session()
     try:
         from PIL import Image
@@ -416,7 +419,7 @@ async def get_photo_image(photo_id: int):
 
 
 @app.post("/photos/{photo_id}/reveal")
-async def reveal_photo_in_finder(photo_id: int):
+def reveal_photo_in_finder(photo_id: int):
     session = db.get_session()
     try:
         photo = session.query(Photo).filter_by(id=photo_id).first()
@@ -442,7 +445,7 @@ async def reveal_photo_in_finder(photo_id: int):
 
 
 @app.get("/faces/{face_id}", response_model=FaceInfo)
-async def get_face_info(face_id: int):
+def get_face_info(face_id: int):
     session = db.get_session()
     try:
         face = session.query(Face).filter_by(id=face_id).first()
@@ -464,12 +467,11 @@ async def get_face_info(face_id: int):
 
 
 @app.get("/faces/{face_id}/crop")
-async def get_face_crop(
+def get_face_crop(
     face_id: int,
     thumbnail: bool = Query(True, description="Generate a thumbnail for quick loading"),
 ):
-    cache_suffix = "_thumb" if thumbnail else "_full"
-    cache_file = CACHE_DIR / f"face_{face_id}{cache_suffix}.jpg"
+    cache_file = get_face_cache_path(face_id, thumbnail=thumbnail)
     if cache_file.exists():
         return FileResponse(cache_file, media_type="image/jpeg")
 
@@ -486,16 +488,12 @@ async def get_face_crop(
             raise HTTPException(status_code=404, detail="Photo file not found")
 
         try:
-            image = Image.open(photo.file_path)
-            padding = 24
-            left = max(0, face.left - padding)
-            top = max(0, face.top - padding)
-            right = min(image.width, face.right + padding)
-            bottom = min(image.height, face.bottom + padding)
-            face_image = image.crop((left, top, right, bottom))
-            if thumbnail:
-                face_image.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
-            face_image.save(cache_file, format="JPEG", quality=86, optimize=True)
+            build_face_crop_cache(
+                face_id=face.id,
+                photo_path=photo.file_path,
+                bounds=(face.top, face.right, face.bottom, face.left),
+                thumbnail=thumbnail,
+            )
             return FileResponse(cache_file, media_type="image/jpeg")
         except Exception as exc:
             logger.error("Failed to crop face {}: {}", face_id, exc)

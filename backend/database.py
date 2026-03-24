@@ -490,6 +490,79 @@ class DatabaseManager:
         finally:
             session.close()
 
+    def save_photo_processing_result(
+        self,
+        photo_id: int,
+        *,
+        file_size: Optional[int] = None,
+        file_hash: Optional[str] = None,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        modified_timestamp: Optional[float] = None,
+        detections: Optional[list[tuple[tuple[int, int, int, int], Any, float]]] = None,
+    ) -> list[dict[str, int]]:
+        """
+        Persist all face detections for a photo in one transaction.
+
+        This avoids the expensive one-face-per-commit path during large scans.
+        """
+
+        detections = detections or []
+        session = self.get_session()
+        try:
+            photo = session.query(Photo).filter_by(id=photo_id).first()
+            if not photo:
+                return []
+
+            if file_size is not None:
+                photo.file_size = file_size
+            if file_hash is not None:
+                photo.file_hash = file_hash
+            if width is not None:
+                photo.width = width
+            if height is not None:
+                photo.height = height
+            if modified_timestamp is not None:
+                photo.modified_timestamp = modified_timestamp
+
+            faces = []
+            for location, encoding, confidence in detections:
+                top, right, bottom, left = location
+                faces.append(
+                    Face(
+                        photo_id=photo_id,
+                        embedding=self._serialize_embedding(encoding),
+                        top=top,
+                        right=right,
+                        bottom=bottom,
+                        left=left,
+                        confidence=confidence,
+                        needs_clustering=True,
+                    )
+                )
+
+            if faces:
+                session.add_all(faces)
+                session.flush()
+
+            photo.processed = True
+            photo.scanned_at = datetime.utcnow()
+            photo.face_count = len(faces)
+            persisted_faces = [
+                {
+                    "id": face.id,
+                    "top": face.top,
+                    "right": face.right,
+                    "bottom": face.bottom,
+                    "left": face.left,
+                }
+                for face in faces
+            ]
+            session.commit()
+            return persisted_faces
+        finally:
+            session.close()
+
     def get_unprocessed_photos(self, limit=None):
         session = self.get_session()
         try:

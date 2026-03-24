@@ -7,6 +7,7 @@ clustering only when the library actually changed.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import os
 import threading
@@ -18,7 +19,10 @@ from loguru import logger
 
 from backend.clustering_service import ClusteringService
 from backend.database import DatabaseManager
+from backend.image_cache import warm_face_crop_cache
 from backend.redis_cache import RedisCache
+
+_worker_state = threading.local()
 
 
 def _utc_now_iso() -> str:
@@ -35,6 +39,10 @@ def calculate_file_hash(file_path: str, chunk_size: int = 8192) -> Optional[str]
         logger.error("Failed to hash {}: {}", file_path, exc)
         return None
     return md5.hexdigest()
+
+
+def _should_calculate_hash() -> bool:
+    return os.getenv("ENABLE_FILE_HASH", "false").lower() in {"1", "true", "yes"}
 
 
 def find_all_images(root_dir: str, extensions: list[str]) -> list[str]:
@@ -56,6 +64,68 @@ def _is_valid_image(file_path: str, extensions: list[str]) -> bool:
     if basename.startswith("._") or basename.startswith("."):
         return False
     return os.path.splitext(file_path)[1].lower() in extensions
+
+
+def _resolve_scan_workers(total_files: int) -> int:
+    configured = os.getenv("SCAN_WORKERS")
+    if configured:
+        try:
+            value = int(configured)
+            if value > 0:
+                return min(value, max(total_files, 1))
+        except ValueError:
+            logger.warning("Invalid SCAN_WORKERS value '{}', using auto mode.", configured)
+
+    cpu_count = os.cpu_count() or 4
+    auto_workers = max(1, min(6, cpu_count))
+    return min(auto_workers, max(total_files, 1))
+
+
+def _should_prebuild_face_crops() -> bool:
+    return os.getenv("PREBUILD_FACE_CROPS", "false").lower() in {"1", "true", "yes"}
+
+
+def _get_thread_detector(model: str):
+    detector = getattr(_worker_state, "detector", None)
+    detector_model = getattr(_worker_state, "detector_model", None)
+    if detector is not None and detector_model == model:
+        return detector
+
+    from backend.face_detector import FaceDetector
+
+    detector = FaceDetector(model=model, use_gpu=True)
+    _worker_state.detector = detector
+    _worker_state.detector_model = model
+    return detector
+
+
+def _process_photo_file(item: dict, detection_model: str) -> dict:
+    from backend.face_detector import get_image_dimensions
+
+    file_path = item["file_path"]
+    result = {
+        **item,
+        "width": None,
+        "height": None,
+        "file_hash": None,
+        "detections": [],
+        "error": None,
+    }
+
+    try:
+        detector = _get_thread_detector(detection_model)
+        width, height = get_image_dimensions(file_path)
+        file_hash = calculate_file_hash(file_path) if _should_calculate_hash() else None
+        locations, encodings, confidences = detector.detect_faces(file_path)
+
+        result["width"] = width
+        result["height"] = height
+        result["file_hash"] = file_hash
+        result["detections"] = list(zip(locations, encodings, confidences))
+        return result
+    except Exception as exc:
+        result["error"] = str(exc)
+        return result
 
 
 class SyncService:
@@ -258,76 +328,83 @@ class SyncService:
         processing_errors = 0
 
         if files_to_process:
-            from backend.face_detector import FaceDetector, get_image_dimensions
+            worker_count = _resolve_scan_workers(len(files_to_process))
+            logger.info(
+                "Processing {} photo(s) with {} worker(s)",
+                len(files_to_process),
+                worker_count,
+            )
 
-            detector = FaceDetector(model=detection_model, use_gpu=True)
+            def persist_result(result: dict, completed_count: int) -> None:
+                nonlocal processed_photos, detected_faces, processing_errors
 
-            for index, item in enumerate(files_to_process, start=1):
-                file_path = item["file_path"]
-                try:
-                    width, height = get_image_dimensions(file_path)
-                    file_hash = calculate_file_hash(file_path)
+                file_path = result["file_path"]
+                if result.get("error"):
+                    processing_errors += 1
+                    logger.error("Failed to process {}: {}", file_path, result["error"])
+                    return
 
-                    self.db.upsert_photo(
-                        file_path=file_path,
-                        file_size=item["file_size"],
-                        file_hash=file_hash,
-                        width=width,
-                        height=height,
-                        modified_timestamp=item["modified_timestamp"],
-                        force_reprocess=force_rescan,
-                    )
+                created_faces = self.db.save_photo_processing_result(
+                    result["photo_id"],
+                    file_size=result.get("file_size"),
+                    file_hash=result.get("file_hash"),
+                    width=result.get("width"),
+                    height=result.get("height"),
+                    modified_timestamp=result.get("modified_timestamp"),
+                    detections=result.get("detections"),
+                )
+                face_count = len(created_faces)
+                processed_photos += 1
+                detected_faces += face_count
 
-                    locations, encodings, confidences = detector.detect_faces(file_path)
-                    for location, encoding, confidence in zip(
-                        locations, encodings, confidences
-                    ):
-                        top, right, bottom, left = location
-                        self.db.add_face(
-                            photo_id=item["photo_id"],
-                            embedding=encoding,
-                            top=top,
-                            right=right,
-                            bottom=bottom,
-                            left=left,
-                            confidence=confidence,
-                            needs_clustering=True,
+                if created_faces and _should_prebuild_face_crops():
+                    try:
+                        warm_face_crop_cache(file_path, created_faces, thumbnail=True)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to warm thumbnail cache for {}: {}",
+                            file_path,
+                            exc,
                         )
 
-                    self.db.mark_photo_processed(
-                        photo_id=item["photo_id"],
-                        face_count=len(locations),
-                        file_hash=file_hash,
-                        modified_timestamp=item["modified_timestamp"],
-                    )
-                    processed_photos += 1
-                    detected_faces += len(locations)
+                self.db.update_scan_progress(
+                    directory=root_dir,
+                    last_path=file_path,
+                    files_scanned=processed_photos,
+                    faces_detected=detected_faces,
+                )
+                self._set_status(
+                    {
+                        "status": "processing",
+                        "message": "Detecting faces in new photos.",
+                        "path": root_dir,
+                        "reason": reason,
+                        "photos_seen": len(image_files),
+                        "new_photos": new_photos,
+                        "changed_photos": changed_photos,
+                        "processed_photos": processed_photos,
+                        "pending_photos": max(len(files_to_process) - completed_count, 0),
+                        "faces_detected": detected_faces,
+                        "updated_at": _utc_now_iso(),
+                        "cache_backend": self.cache.backend_name(),
+                    }
+                )
 
-                    self.db.update_scan_progress(
-                        directory=root_dir,
-                        last_path=file_path,
-                        files_scanned=processed_photos,
-                        faces_detected=detected_faces,
-                    )
-                    self._set_status(
-                        {
-                            "status": "processing",
-                            "message": "Detecting faces in new photos.",
-                            "path": root_dir,
-                            "reason": reason,
-                            "photos_seen": len(image_files),
-                            "new_photos": new_photos,
-                            "changed_photos": changed_photos,
-                            "processed_photos": processed_photos,
-                            "pending_photos": len(files_to_process) - index,
-                            "faces_detected": detected_faces,
-                            "updated_at": _utc_now_iso(),
-                            "cache_backend": self.cache.backend_name(),
-                        }
-                    )
-                except Exception as exc:
-                    processing_errors += 1
-                    logger.exception("Failed to process {}: {}", file_path, exc)
+            if worker_count == 1:
+                for index, item in enumerate(files_to_process, start=1):
+                    result = _process_photo_file(item, detection_model)
+                    persist_result(result, index)
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=worker_count,
+                    thread_name_prefix="photo-scan",
+                ) as executor:
+                    futures = [
+                        executor.submit(_process_photo_file, item, detection_model)
+                        for item in files_to_process
+                    ]
+                    for completed_count, future in enumerate(as_completed(futures), start=1):
+                        persist_result(future.result(), completed_count)
 
         self.db.mark_scan_complete(root_dir)
         pending_faces = self.db.get_stats()["pending_cluster_faces"]
